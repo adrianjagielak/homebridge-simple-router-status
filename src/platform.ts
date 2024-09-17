@@ -1,18 +1,32 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type {
+  API,
+  Characteristic,
+  DynamicPlatformPlugin,
+  Logging,
+  PlatformAccessory,
+  PlatformConfig,
+  Service,
+} from 'homebridge';
+import { get as httpGet } from 'http';
+import { get as httpsGet } from 'https';
+import { URL } from 'url';
 
-import { ExamplePlatformAccessory } from './platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
+interface RouterConfig {
+  name: string;
+  homepageUrl: string;
+  manufacturer?: string;
+  model?: string;
+  serial?: string;
+  firmwareRevision?: string;
+  pollingInterval?: string;
+}
+
+export class SimpleRouterStatusPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
 
-  // this is used to track restored cached accessories
   public readonly accessories: PlatformAccessory[] = [];
 
   constructor(
@@ -25,93 +39,194 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
 
     this.log.debug('Finished initializing platform:', this.config.name);
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
       this.discoverDevices();
     });
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to set up event handlers for characteristics and update respective values.
-   */
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache, so we can track if it has already been registered
     this.accessories.push(accessory);
   }
 
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
   discoverDevices() {
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-    ];
+    const routers: RouterConfig[] = this.config.routers || [];
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
-
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+    for (const router of routers) {
+      const uuid = this.api.hap.uuid.generate(
+        'homepageUrl_' + router.homepageUrl,
+      );
+      const existingAccessory = this.accessories.find(
+        (accessory) => accessory.UUID === uuid,
+      );
+      const accessory =
+        existingAccessory ?? new this.api.platformAccessory(router.name, uuid);
+      accessory.context.device = router;
 
       if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. e.g.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
-
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
-
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, e.g.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
+        this.log.info(
+          'Restoring existing router accessory from cache:',
+          existingAccessory.displayName,
+        );
       } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
+        this.log.info('Adding new router accessory:', router.name);
+      }
 
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
+      accessory
+        .getService(this.Service.AccessoryInformation)!
+        .setCharacteristic(
+          this.Characteristic.Manufacturer,
+          router.manufacturer ?? 'Default-Manufacturer',
+        )
+        .setCharacteristic(
+          this.Characteristic.Model,
+          router.model ?? 'Default-Model',
+        )
+        .setCharacteristic(
+          this.Characteristic.SerialNumber,
+          router.serial ?? 'Default-Serial',
+        )
+        .setCharacteristic(
+          this.Characteristic.FirmwareRevision,
+          router.firmwareRevision ?? '1.0.0',
+        );
+      const wiFiSatelliteService =
+        accessory.getService(this.Service.WiFiSatellite) ||
+        accessory.addService(this.Service.WiFiSatellite);
+      wiFiSatelliteService.setCharacteristic(
+        this.Characteristic.Name,
+        router.name,
+      );
+      wiFiSatelliteService
+        .getCharacteristic(this.Characteristic.WiFiSatelliteStatus)
+        .onGet(async () => {
+          try {
+            const status = await this.getRouterStatus(router.homepageUrl);
+            return status
+              ? this.Characteristic.WiFiSatelliteStatus.CONNECTED
+              : this.Characteristic.WiFiSatelliteStatus.NOT_CONNECTED;
+          } catch (error) {
+            this.log.debug('Error getting router status:', error);
+            return this.Characteristic.WiFiSatelliteStatus.NOT_CONNECTED;
+          }
+        });
 
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
+      const parsedPollingInterval = parseInt(
+        router.pollingInterval ?? 'NaN',
+        10,
+      );
+      const effectivePollingInterval = isNaN(parsedPollingInterval)
+        ? 5000
+        : parsedPollingInterval;
 
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
+      // Start polling the router every 5000ms to fetch status and update HomeKit
+      setInterval(async () => {
+        try {
+          const status = await this.getRouterStatus(router.homepageUrl);
+          wiFiSatelliteService
+            .getCharacteristic(this.Characteristic.WiFiSatelliteStatus)
+            .updateValue(
+              status
+                ? this.Characteristic.WiFiSatelliteStatus.CONNECTED
+                : this.Characteristic.WiFiSatelliteStatus.NOT_CONNECTED,
+            );
+          this.log.debug(
+            `Updated router status for ${router.name}: ${status ? 'CONNECTED' : 'NOT_CONNECTED'}`,
+          );
+        } catch (error: unknown) {
+          if (error instanceof Error) {
+            this.log.debug(
+              `Error auto-updating status for ${router.name}:`,
+              error.message,
+            );
+          } else {
+            this.log.debug(
+              `Unknown error auto-updating status for ${router.name}.`,
+            );
+          }
+        }
+      }, effectivePollingInterval);
 
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      if (!existingAccessory) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
+          accessory,
+        ]);
       }
     }
+
+    for (const accessory of this.accessories) {
+      if (
+        !routers.some(
+          (router) =>
+            this.api.hap.uuid.generate('homepageUrl_' + router.homepageUrl) ===
+            accessory.UUID,
+        )
+      ) {
+        this.log.info(
+          'Removing missing router accessories:',
+          routers.find(
+            (router) =>
+              this.api.hap.uuid.generate(
+                'homepageUrl_' + router.homepageUrl,
+              ) === accessory.UUID,
+          ),
+        );
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
+          accessory,
+        ]);
+      }
+    }
+  }
+
+  parseUrl(inputUrl: string): URL {
+    // If the URL doesn't start with http:// or https://, assume http
+    let url: URL;
+    if (!/^https?:\/\//i.test(inputUrl)) {
+      url = new URL(`http://${inputUrl}`);
+    } else {
+      url = new URL(inputUrl);
+    }
+
+    // If no port is specified, set the default ports for http/https
+    if (!url.port) {
+      if (url.protocol === 'http:') {
+        url.port = '80';
+      } else if (url.protocol === 'https:') {
+        url.port = '443';
+      }
+    }
+
+    return url;
+  }
+
+  async getRouterStatus(inputUrl: string): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      const url = this.parseUrl(inputUrl);
+
+      const getModule = url.protocol === 'https:' ? httpsGet : httpGet;
+
+      const requestOptions = {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        rejectUnauthorized: false, // Ignore SSL certificate errors
+      };
+
+      getModule(requestOptions, (res) => {
+        if (res.statusCode && res.statusCode >= 400 && res.statusCode < 600) {
+          this.log.debug(`Received ${res.statusCode} status from ${url.href}`);
+          resolve(false);
+        } else {
+          this.log.debug(`Successfully fetched status from ${url.href}`);
+          resolve(true);
+        }
+      }).on('error', (error) => {
+        this.log.debug(
+          `Error fetching status from ${url.href}: ${error.message}`,
+        );
+        reject(error);
+      });
+    });
   }
 }

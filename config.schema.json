@@ -1,15 +1,54 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "homebridge-simple-router-status",
   "pluginType": "platform",
   "singular": true,
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "Name",
-        "type": "string",
-        "required": true,
-        "default": "Example Dynamic Platform"
+      "routers": {
+        "type": "array",
+        "title": "Wi-Fi Routers",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "Name",
+              "placeholder": "e.g. Router"
+            },
+            "homepageUrl": {
+              "type": "string",
+              "title": "Homepage URL",
+              "placeholder": "e.g. 192.168.1.1"
+            },
+            "manufacturer": {
+              "type": "string",
+              "title": "Manufacturer",
+              "placeholder": "Optional"
+            },
+            "model": {
+              "type": "string",
+              "title": "Model",
+              "placeholder": "Optional"
+            },
+            "serial": {
+              "type": "string",
+              "title": "Serial",
+              "placeholder": "Optional"
+            },
+            "firmwareRevision": {
+              "type": "string",
+              "title": "Firmware Revision",
+              "placeholder": "Optional"
+            },
+            "pollingInterval": {
+              "type": "string",
+              "title": "Polling Interval (in ms)",
+              "placeholder": "Optional (default 5000ms)"
+            }
+          },
+          "required": ["name", "homepageUrl"]
+        }
       }
     }
   }
